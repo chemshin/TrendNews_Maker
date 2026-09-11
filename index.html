@@ -70,8 +70,9 @@
             <button data-t="wk">위클리 이슈</button>
             <button data-t="cu">컬처</button>
           </div>
-          <label class="small" style="margin-left:8px;"><b>아이템당(초)</b></label>
-          <input type="number" id="perItem" value="10" min="3" max="30" style="width:64px;">
+          <label class="small" style="margin-left:8px;"><b>총 길이(초)</b></label>
+          <input type="number" id="perItem" value="40" min="10" max="180" step="5" style="width:70px;">
+          <span class="small" id="perInfo"></span>
         </div>
         <div class="row">
           <label class="small"><b>매체</b></label>
@@ -141,6 +142,7 @@
           <span id="tlabel" class="small" style="width:82px; text-align:right;"></span>
         </div>
         <button class="btn-make" id="btnMake">🎬 선택 매체 모두 생성</button>
+        <button class="btn-make" id="btnStill" style="background:#fff;color:#111;border:1.5px solid #111;">🖼 아이템별 스틸 추출</button>
         <div class="prog" id="prog"><i id="progBar"></i></div>
         <div class="prog-txt" id="progTxt"></div>
         <div class="dl" id="dl"></div>
@@ -2174,7 +2176,7 @@ const idbReady = new Promise(res=>{
 function scheduleSave(){ if(restoring) return; clearTimeout(saveTimer); saveTimer=setTimeout(saveState,400); }
 function saveState(){
   if(!db || restoring) return;
-  const rec={ per: parseFloat(document.getElementById('perItem').value)||10, medias: selMedias(),
+  const rec={ per: parseFloat(document.getElementById('perItem').value)||40, medias: selMedias(),
     split: sheetSplit,
     items: items.map(it=>({tags:it.tags||'', b1:it.b1||'', b2:it.b2||'', brand:it.brand||'', meta:it.meta||'',
       cmt: (it.imgCmt&&it.imgCmt.blob)? {blob:it.imgCmt.blob}:null,
@@ -2193,7 +2195,7 @@ async function restoreType(t){
     const rec=await loadState(t);
     items=[]; sheetSplit=null;
     if(rec){
-      document.getElementById('perItem').value=rec.per||10;
+      document.getElementById('perItem').value=rec.per||40;
       const ms=rec.medias||['cmt','pmt','led','pil'];
       document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', ms.includes(c.dataset.m)));
       sheetSplit = rec.split || null;
@@ -2208,7 +2210,8 @@ async function restoreType(t){
   } finally { restoring=false; }
 }
 function selMedias(){ return [...document.querySelectorAll('.chip.on')].map(c=>c.dataset.m); }
-function perSec(){ return Math.max(3, parseFloat(document.getElementById('perItem').value)||10); }
+function totalSec(){ return Math.max(5, parseFloat(document.getElementById('perItem').value)||40); }
+function itemPer(m, group){ return (totalSec() - introDur(m) - outroDur(m)) / Math.max(1, group.length); }
 
 // 위클리 분할 규칙: 6=3+3, 7=4+3, 8=4+4, 9=5+4, 10=5+5
 function clipGroups(){
@@ -2258,7 +2261,15 @@ function refreshMeta(){
   document.getElementById('cntLabel').textContent = `현재 ${items.length}개 / 최대 ${T.max}개`;
   const g = clipGroups();
   document.getElementById('splitInfo').textContent = g.length > 1
-    ? `⚠ 아이템 ${items.length}개 → 클립 ${g.length}개로 분할 생성 (${g.map(x=>x.length+'개').join(' + ')})` : '';
+    ? `⚠ 아이템 ${items.length}개 → 클립 ${g.length}개로 분할 생성 (${g.map(x=>x.length+'개').join(' + ')}) — 각 클립 ${totalSec()}초` : '';
+  // 아이템당 환산 시간 표시 (선택 매체 중 인트로가 가장 긴 기준)
+  if(items.length){
+    const ms=selMedias(); let per=Infinity, m0=null;
+    for(const m of (ms.length?ms:['cmt'])){ const p=itemPer(m, g[0]); if(p<per){per=p; m0=m;} }
+    const el=document.getElementById('perInfo');
+    if(per<2.5){ el.innerHTML='<span style="color:#c0392b;">⚠ 아이템당 '+per.toFixed(1)+'초 — 총 길이를 늘리세요</span>'; }
+    else el.textContent = `→ 아이템당 약 ${per.toFixed(1)}초`;
+  } else document.getElementById('perInfo').textContent='';
   const pvClip = document.getElementById('pvClip');
   if(g.length > 1){
     pvClip.style.display = '';
@@ -2667,10 +2678,10 @@ function drawItem(ctx, m, it, zoneSrc){
 // ---------- 타임라인 (클립 단위) ----------
 function introDur(m){ return CLIP_DUR[curType][m].i; }
 function outroDur(m){ return CLIP_DUR[curType][m].o; }
-function clipTotal(m, group){ return introDur(m) + group.length*perSec() + outroDur(m); }
+function clipTotal(m, group){ return totalSec(); }  // 인트로+아웃트로 포함 총 길이 고정
 // 반환: {seg:'intro'|'outro'|'body', local?, itemIdx?, nextIdx?, p?}
 function segmentAt(m, group, t){
-  const iD=introDur(m), bodyD=group.length*perSec(), per=perSec();
+  const per=itemPer(m,group), iD=introDur(m), bodyD=group.length*per;
   if(t < iD) return {seg:'intro', local:t};
   if(t < iD+bodyD){
     const bt=t-iD;
@@ -2732,7 +2743,7 @@ function drawPreviewAt(t){
   const s=segmentAt(m,g,t);
   if(s.seg==='body'){
     pauseAll();
-    const iD=introDur(m), per=perSec();
+    const iD=introDur(m), per=itemPer(m,g);
     const curIdx = (s.p!==undefined && s.p>=0.5) ? s.nextIdx : s.itemIdx;
     const mo = itemMedia(items[curIdx], m);
     if(mo && mo.type==='vid'){
@@ -2755,14 +2766,25 @@ function drawPreviewAt(t){
   if(v.readyState<1){ pvCtx.fillStyle='#000'; pvCtx.fillRect(0,0,M.W,M.H); return; }
   if(playing){
     if(v.paused){ v.currentTime=Math.min(s.local, v.duration-0.05); v.play().catch(()=>{}); }
-    drawCoverV(pvCtx,M,v);
+  } else if(!seekPending && Math.abs(v.currentTime-s.local)>0.05){
+    seekPending=true;
+    v.addEventListener('seeked',()=>{seekPending=false; invalidate();},{once:true});
+    v.currentTime=Math.min(s.local,(v.duration||2)-0.05);
+  }
+  const gg=pvGroup(), ease=p=>p*p*(3-2*p);
+  if(s.seg==='outro' && gg.length && s.local < DISS){
+    drawItem(pvCtx, m, items[gg[gg.length-1]]);
+    pvCtx.save(); pvCtx.globalAlpha=ease(Math.max(0,Math.min(1,s.local/DISS)));
+    drawCoverV(pvCtx,M,v); pvCtx.restore();
+    if(playing) invalidate();
   } else {
-    if(!seekPending && Math.abs(v.currentTime-s.local)>0.05){
-      seekPending=true;
-      v.addEventListener('seeked',()=>{seekPending=false; invalidate();},{once:true});
-      v.currentTime=Math.min(s.local,(v.duration||2)-0.05);
-    }
     drawCoverV(pvCtx,M,v);
+    const tail = s.local - (introDur(m) - DISS);
+    if(s.seg==='intro' && gg.length && tail > 0){
+      pvCtx.save(); pvCtx.globalAlpha=ease(Math.max(0,Math.min(1,tail/DISS)));
+      drawItem(pvCtx, m, items[gg[0]]); pvCtx.restore();
+      if(playing) invalidate();
+    }
   }
 }
 function drawCoverV(ctx,M,src){
@@ -2894,6 +2916,7 @@ async function pickEncoderConfig(W,H){
 }
 let pillarFallback=false; // 7680 인코딩 불가 시 단일 패널(3840) 출력
 async function renderClip(m, group, onProgress){
+  await tplReady(curType, m);
   const M0=MEDIA[m];
   let M=M0, cfg=await pickEncoderConfig(M0.W,M0.H);
   if(!cfg && m==='pil'){ pillarFallback=true; M={...M0, W:M0.panelW}; cfg=await pickEncoderConfig(M.W,M.H); }
@@ -2922,17 +2945,28 @@ async function renderClip(m, group, onProgress){
   };
   const drawFrV = fr => { drawCoverV(ctx,M,fr); };
 
-  const iD=introDur(m), per=perSec(), bodyD=group.length*per;
+  const per=itemPer(m,group), iD=introDur(m), bodyD=group.length*per;
   const introF=Math.round(iD*FPS);
-  await captureClipDecoded(CLIP_B64[curType][m].i, 0, introF, fr=>{drawFrV(fr);pushFrame();}, ()=>pushFrame(), null, ()=>encoder.encodeQueueSize);
-  if(encError) throw encError;
-
-  // ---- 본편: 아이템 단위 순차 렌더 (이미지/영상 공용) ----
-  // 프레임 소유권: 아이템 k는 [iD+k*per-DISS/2, iD+(k+1)*per-DISS/2) 구간 (첫/마지막 아이템는 경계 조정)
   const itemCv = new OffscreenCanvas(W,H), itemCtx = itemCv.getContext('2d');
   const stillCv = new OffscreenCanvas(W,H), stillCtx = stillCv.getContext('2d');
   let hasStill = false;
   const easeP = p => p*p*(3-2*p);
+
+  // 인트로 → 아이템1 디졸브: 인트로 마지막 DISS 구간에 아이템1을 페이드인
+  await captureClipDecoded(CLIP_B64[curType][m].i, 0, introF, fr=>{
+    drawFrV(fr);
+    const t = gf/FPS;
+    if(group.length && t > iD - DISS){
+      drawItem(itemCtx, m, items[group[0]]);
+      const p = easeP(Math.max(0, Math.min(1, (t - (iD - DISS)) / DISS)));
+      ctx.save(); ctx.globalAlpha = p; ctx.drawImage(itemCv, 0, 0); ctx.restore();
+    }
+    pushFrame();
+  }, ()=>pushFrame(), null, ()=>encoder.encodeQueueSize);
+  if(encError) throw encError;
+
+  // ---- 본편: 아이템 단위 순차 렌더 (이미지/영상 공용) ----
+  // 프레임 소유권: 아이템 k는 [iD+k*per-DISS/2, iD+(k+1)*per-DISS/2) 구간 (첫/마지막 아이템은 경계 조정)
 
   const composeFrame = (k, gIdx, zoneSrc) => {
     const t = gf/FPS;
@@ -2986,7 +3020,16 @@ async function renderClip(m, group, onProgress){
     // 다음 아이템 디졸브용 정지 프레임 (현재 아이템 순수 콘텐츠)
     stillCtx.drawImage(itemCv, 0, 0); hasStill = true;
   }
-  await captureClipDecoded(CLIP_B64[curType][m].o, 0, total-gf, fr=>{drawFrV(fr);pushFrame();}, ()=>pushFrame(), null, ()=>encoder.encodeQueueSize);
+  // 마지막 아이템 → 아웃트로 디졸브
+  await captureClipDecoded(CLIP_B64[curType][m].o, 0, total-gf, fr=>{
+    const local = gf/FPS - (iD + bodyD);
+    if(hasStill && local < DISS){
+      ctx.drawImage(stillCv, 0, 0);
+      const p = easeP(Math.max(0, Math.min(1, local / DISS)));
+      ctx.save(); ctx.globalAlpha = p; drawFrV(fr); ctx.restore();
+    } else drawFrV(fr);
+    pushFrame();
+  }, ()=>pushFrame(), null, ()=>encoder.encodeQueueSize);
   if(encError) throw encError;
   await encoder.flush();
   muxer.finalize();
@@ -2998,9 +3041,60 @@ function todayStr(){
   return `${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
 }
 
+// 템플릿 이미지 로드 보장
+function tplReady(t,m){
+  const im=tplImg(t,m);
+  if(im.complete && im.naturalWidth) return Promise.resolve(im);
+  return new Promise(r=>{ const done=()=>r(im); im.addEventListener('load',done,{once:true}); im.addEventListener('error',done,{once:true}); });
+}
+// ---------- 아이템별 스틸 추출 ----------
+document.getElementById('btnStill').addEventListener('click', async ()=>{
+  const medias=selMedias();
+  if(!medias.length){ alert('매체를 하나 이상 선택하세요.'); return; }
+  if(!items.length){ alert('아이템이 없습니다.'); return; }
+  const dl=document.getElementById('dl'), txt=document.getElementById('progTxt');
+  dl.innerHTML=''; 
+  const btn=document.getElementById('btnStill'); btn.disabled=true;
+  try{
+    for(const m of medias){
+      await tplReady(curType,m);
+      const M=MEDIA[m];
+      const cv=new OffscreenCanvas(M.W,M.H), c2=cv.getContext('2d');
+      for(let i=0;i<items.length;i++){
+        txt.textContent=`스틸 추출 중... ${M.name} 아이템 ${i+1}/${items.length}`;
+        drawItem(c2, m, items[i]);
+        const blob=await cv.convertToBlob({type:'image/png'});
+        const a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download=`트렌드뉴스_${TYPES[curType].name}_${M.name}_아이템${i+1}_${todayStr()}.png`;
+        a.textContent=`🖼 ${M.name} 아이템${i+1} 스틸 (${(blob.size/1048576).toFixed(1)}MB)`;
+        a.style.background='#555';
+        dl.appendChild(a);
+        await new Promise(r=>setTimeout(r,0));
+      }
+    }
+    const all=document.createElement('a');
+    all.href='#'; all.textContent='⬇ 스틸 모두 저장'; all.style.background='#111';
+    all.addEventListener('click', async e=>{
+      e.preventDefault();
+      for(const a of dl.querySelectorAll('a[download]')){ a.click(); await new Promise(r=>setTimeout(r,350)); }
+    });
+    dl.insertBefore(all, dl.firstChild);
+    txt.textContent=`스틸 ${medias.length*items.length}장 추출 완료`;
+  }catch(e){ txt.textContent='스틸 추출 오류: '+e.message; }
+  finally{ btn.disabled=false; }
+});
+
 document.getElementById('btnMake').addEventListener('click', async ()=>{
   const medias=selMedias();
   if(!medias.length){ alert('매체를 하나 이상 선택하세요.'); return; }
+  if(!items.length){ alert('아이템이 없습니다.'); return; }
+  for(const m of medias){
+    for(const g of clipGroups()){
+      const p=itemPer(m,g);
+      if(p<2){ alert(`${MEDIA[m].name}: 총 ${totalSec()}초에서 인트로/아웃트로를 빼면 아이템당 ${p.toFixed(1)}초입니다. 총 길이를 늘려주세요.`); return; }
+    }
+  }
   const missing=[];
   items.forEach((it,i)=>{
     const needCmt=medias.includes('cmt') && !it.imgCmt;
