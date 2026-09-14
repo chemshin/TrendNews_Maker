@@ -2128,8 +2128,8 @@ const LAY = {
     pil:{zone:[959,0,2881,2160],  tx:189, tagY:490, b1Y:653, b2Y:775, tagF:98, bodyF:72}
   },
   wk:{
-    cmt:{zone:[48,403,865,1614],  tx:74,  chipTop:200, chipH:58,  chipF:38, b1Y:300, b2Y:364, bodyF:52},
-    pmt:{zone:[50,596,1341,1858], tx:110, chipTop:318, chipH:80,  chipF:54, b1Y:456, b2Y:546, bodyF:72},
+    cmt:{zone:[48,403,865,1614],  tx:64,  chipTop:146, chipH:62,  chipF:36, b1Y:302, b2Y:377, bodyF:50},
+    pmt:{zone:[50,596,1341,1858], tx:84,  chipTop:208, chipH:86,  chipF:52, b1Y:419, b2Y:522, bodyF:68},
     led:{zone:[1158,66,683,948],  tx:89,  chipTop:420, chipH:62,  chipF:40, b1Y:545, b2Y:615, bodyF:60},
     pil:{zone:[891,74,2788,2012], tx:167, chipTop:300, chipH:126, chipF:86, b1Y:560, b2Y:710, bodyF:116}
   },
@@ -3111,14 +3111,26 @@ document.getElementById('btnMake').addEventListener('click', async ()=>{
         txt=document.getElementById('progTxt'), dl=document.getElementById('dl');
   dl.innerHTML=''; prog.style.display='block';
   document.getElementById('btnMake').disabled=true;
+  // 화면 절전 방지 (생성 중 탭이 잠들면 크롬이 코덱을 회수함)
+  let wakeLock=null;
+  try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(e){}
   try{
     for(let j=0;j<jobs.length;j++){
       const {m,gi}=jobs[j], g=groups[gi], M=MEDIA[m];
       const len=Math.round(clipTotal(m,g));
-      const blob=await renderClip(m, g, p=>{
+      const onP=p=>{
         bar.style.width=(((j+p)/jobs.length)*100).toFixed(1)+'%';
         txt.textContent=`[${j+1}/${jobs.length}] ${TYPES[curType].name} ${M.name}${groups.length>1?` 클립${gi+1}`:''} 인코딩 중... ${(p*100).toFixed(0)}%`;
-      });
+      };
+      let blob;
+      try{ blob=await renderClip(m, g, onP); }
+      catch(e){
+        if(/reclaim|inactiv/i.test(e.message||'')){
+          txt.textContent='코덱이 회수되어 재시도 중... (생성 중에는 이 탭을 화면에 띄워두세요)';
+          await new Promise(r=>setTimeout(r,800));
+          blob=await renderClip(m, g, onP);   // 1회 재시도
+        } else throw e;
+      }
       const a=document.createElement('a');
       a.href=URL.createObjectURL(blob);
       a.download=`트렌드뉴스_${TYPES[curType].name}_${M.name}_${len}초_${todayStr()}${groups.length>1?'_'+(gi+1):''}.mp4`;
@@ -3127,8 +3139,9 @@ document.getElementById('btnMake').addEventListener('click', async ()=>{
     }
     bar.style.width='100%'; txt.textContent='완료!'+(pillarFallback?' (필러: 브라우저가 7680폭 인코딩을 지원하지 않아 좌측 패널 3840×2160으로 출력됨 — 편집기에서 좌우 복제 필요)':'');
   }catch(e){
-    txt.textContent='오류: '+e.message;
+    txt.textContent='오류: '+e.message+(/reclaim|inactiv/i.test(e.message||'')?' — 생성 중 탭을 최소화하거나 다른 탭으로 이동하면 크롬이 인코더를 회수합니다. 탭을 화면에 띄운 채 다시 시도해주세요.':'');
   }finally{
+    if(wakeLock){ try{ wakeLock.release(); }catch(e){} }
     document.getElementById('btnMake').disabled=!hasWebCodecs;
   }
 });
