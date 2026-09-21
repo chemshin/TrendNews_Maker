@@ -2543,7 +2543,13 @@ async function loadSheetRounds(){
       const cnt = rd.groups.reduce((a,g)=>a+g.filter(c=>parseCell(c)).length,0);
       return `<option value="${i}">${rd.start.getFullYear()}년 ${fmtD(rd.start)} ~ ${fmtD(rd.end)} (아이템 ${cnt}개${rd.groups.length>1?', 클립 '+rd.groups.length+'개':''})</option>`;
     }).join('');
-    sel.value = '0';  // 가장 가까운 회차 (진행 중이면 그것)
+    // 디폴트: 오늘 '이후'의 가장 가까운 수요일(당일 제외)을 시작일로 하는 회차
+    // 예) 9/21(일) → 9/23(수) 회차, 9/23(수) 당일부터는 → 9/30(수) 회차
+    const target = new Date(today0);
+    do { target.setDate(target.getDate()+1); } while(target.getDay() !== 3);
+    let pick = sheetRounds.findIndex(rd => rd.start.getTime() === target.getTime());
+    if(pick < 0) pick = sheetRounds.findIndex(rd => rd.start >= target);   // 정확히 없으면 그 이후 첫 회차
+    sel.value = String(Math.max(0, pick));
     msg.textContent = `날짜를 선택하고 '아이템 셋팅'을 누르세요.`;
   }catch(e){
     document.getElementById('roundSel').innerHTML='<option>로드 실패</option>';
