@@ -56,7 +56,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>트렌드 뉴스 영상 생성기 <span id="buildVer" style="font-size:13px;font-weight:600;color:#999;vertical-align:middle;">(업데이트: 26.10.02 09:22)</span></h1>
+  <h1>트렌드 뉴스 영상 생성기 <span id="buildVer" style="font-size:13px;font-weight:600;color:#999;vertical-align:middle;">(업데이트: 26.10.07 16:56)</span></h1>
   <div class="sub">종류·매체 선택 → 텍스트 일괄 입력 → 이미지 일괄 업로드(규격 자동 감지) → mp4 생성</div>
   <div class="warn" id="warn">이 브라우저는 WebCodecs를 지원하지 않아 영상 생성이 안 됩니다. PC 크롬/엣지에서 열어주세요.</div>
 
@@ -2631,12 +2631,39 @@ function roundRectPath(ctx,x,y,w,h,r){
   ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
 }
 // 텍스트 레이어 (좌표계는 호출측에서 세팅: 필러는 회전된 세로 좌표계)
-function drawText(ctx, P, it, sx){
+// 아이템 시작 후 경과시간(animT) 기준 진행도. animT 미지정(스틸 등)은 완료 상태
+function animP(animT, t0, dur){
+  if(animT===undefined || animT===null) return 1;
+  const p=(animT-t0)/dur;
+  return p<=0 ? 0 : (p>=1 ? 1 : p*p*(3-2*p));
+}
+function drawText(ctx, P, it, animT){
   ctx.textBaseline='alphabetic';
   if(curType==='he'){
-    ctx.fillStyle='#fff'; ctx.textAlign='left';
-    ctx.font=`600 ${P.tagF}px ${F_WK_CHIP}`;  ctx.fillText(it.tags||'', P.tx, P.tagY);
-    ctx.font=`700 ${P.bodyF}px ${F_WK_BODY}`; ctx.fillText(it.b1||'', P.tx, P.b1Y); ctx.fillText(it.b2||'', P.tx, P.b2Y);
+    // 태그: 자간 수렴+페이드(1.0s) → 본문1(0.9s~) → 본문2(1.2s~) 순차 페이드
+    const pT=animP(animT,0,1.0), p1=animP(animT,0.9,0.7), p2=animP(animT,1.2,0.7);
+    const ga=ctx.globalAlpha;
+    ctx.textAlign='left'; ctx.fillStyle='#fff';
+    if(pT>0){
+      ctx.globalAlpha=ga*pT;
+      try{ ctx.letterSpacing=((1-pT)*P.tagF*0.6).toFixed(1)+'px'; }catch(e){}
+      ctx.font=`600 ${P.tagF}px ${F_WK_CHIP}`; ctx.fillText(it.tags||'', P.tx, P.tagY);
+      try{ ctx.letterSpacing='0px'; }catch(e){}
+    }
+    ctx.font=`700 ${P.bodyF}px ${F_WK_BODY}`;
+    if(p1>0){
+      ctx.globalAlpha=ga*p1;
+      try{ ctx.letterSpacing=((1-p1)*P.bodyF*0.25).toFixed(1)+'px'; }catch(e){}
+      ctx.fillText(it.b1||'', P.tx, P.b1Y);
+      try{ ctx.letterSpacing='0px'; }catch(e){}
+    }
+    if(p2>0){
+      ctx.globalAlpha=ga*p2;
+      try{ ctx.letterSpacing=((1-p2)*P.bodyF*0.25).toFixed(1)+'px'; }catch(e){}
+      ctx.fillText(it.b2||'', P.tx, P.b2Y);
+      try{ ctx.letterSpacing='0px'; }catch(e){}
+    }
+    ctx.globalAlpha=ga;
   } else if(curType==='wk'){
     const tags=(it.tags||'').split(/\s+/).filter(t=>t.startsWith('#'));
     let tx=P.tx; ctx.font=`600 ${P.chipF}px ${F_WK_CHIP}`; ctx.textAlign='left';
@@ -2654,7 +2681,7 @@ function drawText(ctx, P, it, sx){
   }
 }
 // 단일 패널 렌더 (CMT/PMT/AP LED)
-function drawPanelFlat(ctx, m, it, W, H, zoneSrc){
+function drawPanelFlat(ctx, m, it, W, H, zoneSrc, animT){
   const P=LAY[curType][m], mo=(m==='cmt'?it.imgCmt:it.imgBig), tpl=tplImg(curType,m);
   const img = zoneSrc!==undefined ? zoneSrc : (mo ? mo.el : null);
   const [zx,zy,zw,zh]=P.zone;
@@ -2665,10 +2692,10 @@ function drawPanelFlat(ctx, m, it, W, H, zoneSrc){
   } else { ctx.fillStyle='#fff'; ctx.fillRect(0,0,W,H); }
   if(img) drawCover(ctx,img,zx,zy,zw,zh); else { ctx.fillStyle='#d8d8d8'; ctx.fillRect(zx,zy,zw,zh); }
   if(tpl.complete && tpl.naturalWidth) ctx.drawImage(tpl,0,0,W,H);
-  drawText(ctx,P,it);
+  drawText(ctx,P,it,animT);
 }
 // AP 필러: 패널(3840x2160) = 세로(2160x3840) 레이아웃을 90° 반시계 회전. 좌우 2패널 동일.
-function drawPanelPillar(ctx, it, zoneSrc){
+function drawPanelPillar(ctx, it, zoneSrc, animT){
   const PW=3840, PH=2160, P=LAY[curType].pil, mo=it.imgBig, tpl=tplImg(curType,'pil');
   const img = zoneSrc!==undefined ? zoneSrc : (mo ? mo.el : null);
   const [zx,zy,zw,zh]=P.zone; // 패널 좌표(가로)
@@ -2690,13 +2717,19 @@ function drawPanelPillar(ctx, it, zoneSrc){
     if(tpl.complete && tpl.naturalWidth) ctx.drawImage(tpl,px,0,PW,PH);
     // 텍스트: 세로 좌표계(u 0~2160, v 0~3840)
     ctx.save(); ctx.translate(px,PH); ctx.rotate(-Math.PI/2);
-    drawText(ctx,P,it); ctx.restore();
+    drawText(ctx,P,it,animT); ctx.restore();
     ctx.restore();
   }
 }
-function drawItem(ctx, m, it, zoneSrc){
+function drawItem(ctx, m, it, zoneSrc, animT){
   const M=MEDIA[m];
-  if(m==='pil') drawPanelPillar(ctx,it,zoneSrc); else drawPanelFlat(ctx,m,it,M.W,M.H,zoneSrc);
+  if(m==='pil') drawPanelPillar(ctx,it,zoneSrc,animT); else drawPanelFlat(ctx,m,it,M.W,M.H,zoneSrc,animT);
+}
+// 아이템 idx의 애니메이션 경과시간 (등장 시작 = 0)
+function itemAnimT(m, g, t, idx){
+  const gi=g.indexOf(idx); if(gi<0) return undefined;
+  const segStart=introDur(m)+gi*itemPer(m,g);
+  return t - segStart + (gi===0 ? DISS : DISS/2);
 }
 
 // ---------- 타임라인 (클립 단위) ----------
@@ -2718,11 +2751,13 @@ function segmentAt(m, group, t){
   }
   return {seg:'outro', local:t-iD-bodyD};
 }
-function drawBody(ctx, m, s){
-  drawItem(ctx, m, items[s.itemIdx]);
+function drawBody(ctx, m, s, t, g){
+  const a1=(t!==undefined)? itemAnimT(m,g,t,s.itemIdx) : undefined;
+  drawItem(ctx, m, items[s.itemIdx], undefined, a1);
   if(s.p!==undefined){
     const e=s.p*s.p*(3-2*s.p);
-    ctx.save(); ctx.globalAlpha=e; drawItem(ctx, m, items[s.nextIdx]); ctx.restore();
+    const a2=(t!==undefined)? itemAnimT(m,g,t,s.nextIdx) : undefined;
+    ctx.save(); ctx.globalAlpha=e; drawItem(ctx, m, items[s.nextIdx], undefined, a2); ctx.restore();
   }
 }
 
@@ -2782,7 +2817,8 @@ function drawPreviewAt(t){
       }
       pauseItemVideos(v);
     } else pauseItemVideos(null);
-    drawBody(pvCtx,m,s);
+    drawBody(pvCtx,m,s,t,g);
+    if(playing && curType==='he') invalidate();
     return;
   }
   pauseItemVideos(null);
@@ -2806,7 +2842,7 @@ function drawPreviewAt(t){
     const tail = s.local - (introDur(m) - DISS);
     if(s.seg==='intro' && gg.length && tail > 0){
       pvCtx.save(); pvCtx.globalAlpha=ease(Math.max(0,Math.min(1,tail/DISS)));
-      drawItem(pvCtx, m, items[gg[0]]); pvCtx.restore();
+      drawItem(pvCtx, m, items[gg[0]], undefined, tail); pvCtx.restore();
       if(playing) invalidate();
     }
   }
@@ -2981,7 +3017,7 @@ async function renderClip(m, group, onProgress){
     drawFrV(fr);
     const t = gf/FPS;
     if(group.length && t > iD - DISS){
-      drawItem(itemCtx, m, items[group[0]]);
+      drawItem(itemCtx, m, items[group[0]], undefined, t-(iD-DISS));
       const p = easeP(Math.max(0, Math.min(1, (t - (iD - DISS)) / DISS)));
       ctx.save(); ctx.globalAlpha = p; ctx.drawImage(itemCv, 0, 0); ctx.restore();
     }
@@ -2996,7 +3032,7 @@ async function renderClip(m, group, onProgress){
     const t = gf/FPS;
     const segStart = iD + gIdx*per;
     const local = t - segStart; // 디졸브 프리롤 구간에선 음수
-    drawItem(itemCtx, m, items[k], zoneSrc);
+    drawItem(itemCtx, m, items[k], zoneSrc, local + (gIdx===0 ? DISS : DISS/2));
     if(gIdx>0 && local < DISS/2 && hasStill){
       const p = (local + DISS/2) / DISS;
       ctx.drawImage(stillCv, 0, 0);
