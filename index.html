@@ -56,7 +56,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>트렌드 뉴스 영상 생성기 <span id="buildVer" style="font-size:13px;font-weight:600;color:#999;vertical-align:middle;">(업데이트: 26.10.12 13:52)</span></h1>
+  <h1>트렌드 뉴스 영상 생성기 <span id="buildVer" style="font-size:13px;font-weight:600;color:#999;vertical-align:middle;">(업데이트: 26.10.12 14:04)</span></h1>
   <div class="sub">종류·매체 선택 → 텍스트 일괄 입력 → 이미지 일괄 업로드(규격 자동 감지) → mp4 생성</div>
   <div class="warn" id="warn">이 브라우저는 WebCodecs를 지원하지 않아 영상 생성이 안 됩니다. PC 크롬/엣지에서 열어주세요.</div>
 
@@ -2178,7 +2178,7 @@ const CLIP_DUR = { // ffprobe 실측
 // ---------- 상태 ----------
 let curType = 'he';
 let items = [];  // {tags, b1, b2, imgCmt, imgBig}
-function newItem(){ return {tags:'', b1:'', b2:'', imgCmt:null, imgBig:null}; }
+function newItem(){ return {tags:'', b1:'', b2:'', dur:'', imgCmt:null, imgBig:null}; }
 // ---------- 저장/복원: 종류별로 지난 작업이 남아 다음 주에 일부만 교체 가능 ----------
 let db=null, saveTimer=null, restoring=false;
 const idbReady = new Promise(res=>{
@@ -2194,7 +2194,7 @@ function saveState(){
   if(!db || restoring) return;
   const rec={ per: parseFloat(document.getElementById('perItem').value)||40, medias: selMedias(),
     split: sheetSplit,
-    items: items.map(it=>({tags:it.tags||'', b1:it.b1||'', b2:it.b2||'', brand:it.brand||'', meta:it.meta||'',
+    items: items.map(it=>({tags:it.tags||'', b1:it.b1||'', b2:it.b2||'', dur:it.dur||'', brand:it.brand||'', meta:it.meta||'',
       cmt: (it.imgCmt&&it.imgCmt.blob)? {blob:it.imgCmt.blob}:null,
       big: (it.imgBig&&it.imgBig.blob)? {blob:it.imgBig.blob}:null})) };
   try{ db.transaction('state','readwrite').objectStore('state').put(rec, curType); }catch(e){}
@@ -2216,7 +2216,7 @@ async function restoreType(t){
       document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', ms.includes(c.dataset.m)));
       sheetSplit = rec.split || null;
       for(const r of (rec.items||[])){
-        const it=newItem(); it.tags=r.tags; it.b1=r.b1; it.b2=r.b2; it.brand=r.brand||''; it.meta=r.meta||'';
+        const it=newItem(); it.tags=r.tags; it.b1=r.b1; it.b2=r.b2; it.dur=r.dur||''; it.brand=r.brand||''; it.meta=r.meta||'';
         if(r.cmt&&r.cmt.blob){ const mo=await loadMedia(r.cmt.blob); if(mo) it.imgCmt=mo; }
         if(r.big&&r.big.blob){ const mo=await loadMedia(r.big.blob); if(mo) it.imgBig=mo; }
         items.push(it);
@@ -2228,6 +2228,22 @@ async function restoreType(t){
 function selMedias(){ return [...document.querySelectorAll('.chip.on')].map(c=>c.dataset.m); }
 function totalSec(){ return Math.max(5, parseFloat(document.getElementById('perItem').value)||40); }
 function itemPer(m, group){ return (totalSec() - introDur(m) - outroDur(m)) / Math.max(1, group.length); }
+// 아이템별 길이: 지정값 우선, 미지정은 남는 시간 균등 배분 (총 길이 고정 유지)
+function itemDurs(m, group){
+  const avail = totalSec() - introDur(m) - outroDur(m);
+  const fixed = group.map(k => { const v=parseFloat(items[k] && items[k].dur); return (v>0)?v:null; });
+  const fsum = fixed.reduce((a,v)=>a+(v||0),0);
+  const nAuto = fixed.filter(v=>v===null).length;
+  const autoDur = nAuto>0 ? Math.max(0,(avail-fsum))/nAuto : 0;
+  return fixed.map(v => v===null ? autoDur : v);
+}
+// 경계 시각: [아이템1 시작(=인트로끝), 아이템2 시작, ..., 본편 끝]
+function segBounds(m, group){
+  const durs=itemDurs(m,group); let acc=introDur(m);
+  const out=[acc];
+  for(const d of durs){ acc+=d; out.push(acc); }
+  return out;
+}
 
 // 위클리 분할 규칙: 6=3+3, 7=4+3, 8=4+4, 9=5+4, 10=5+5
 function clipGroups(){
@@ -2280,11 +2296,19 @@ function refreshMeta(){
     ? `⚠ 아이템 ${items.length}개 → 클립 ${g.length}개로 분할 생성 (${g.map(x=>x.length+'개').join(' + ')}) — 각 클립 ${totalSec()}초` : '';
   // 아이템당 환산 시간 표시 (선택 매체 중 인트로가 가장 긴 기준)
   if(items.length){
-    const ms=selMedias(); let per=Infinity, m0=null;
-    for(const m of (ms.length?ms:['cmt'])){ const p=itemPer(m, g[0]); if(p<per){per=p; m0=m;} }
+    const ms=selMedias(); const m0=(ms.length?ms:['cmt'])[0];
     const el=document.getElementById('perInfo');
-    if(per<2.5){ el.innerHTML='<span style="color:#c0392b;">⚠ 아이템당 '+per.toFixed(1)+'초 — 총 길이를 늘리세요</span>'; }
-    else el.textContent = `→ 아이템당 약 ${per.toFixed(1)}초`;
+    let minAuto=Infinity, anyAuto=false, bad=false;
+    for(const m of (ms.length?ms:['cmt'])){
+      for(const gg of g){
+        const durs=itemDurs(m,gg);
+        gg.forEach((k,i)=>{ if(!(parseFloat(items[k].dur)>0)){ anyAuto=true; if(durs[i]<minAuto) minAuto=durs[i]; } });
+        if(Math.min(...durs)<2) bad=true;
+      }
+    }
+    if(bad) el.innerHTML='<span style="color:#c0392b;">⚠ 2초 미만 아이템 있음 — 총 길이/지정 길이 확인</span>';
+    else if(anyAuto) el.textContent = `→ 자동 아이템당 약 ${minAuto.toFixed(1)}초`;
+    else el.textContent = '→ 전 아이템 길이 지정됨';
   } else document.getElementById('perInfo').textContent='';
   const pvClip = document.getElementById('pvClip');
   if(g.length > 1){
@@ -2314,19 +2338,25 @@ function rebuildItems(){
         <input type="text" id="tg${i}" placeholder="#태그 #태그" value="${esc(it.tags)}">
         <input type="text" id="b1_${i}" placeholder="본문 1줄" value="${esc(it.b1)}">
         <input type="text" id="b2_${i}" placeholder="본문 2줄" value="${esc(it.b2)}">
+        <div class="row" style="gap:6px;">
+          <label class="small"><b>아이템 길이(초)</b></label>
+          <input type="number" id="du${i}" min="1" step="0.5" style="width:84px;" placeholder="자동" value="${esc(it.dur||'')}">
+          <span class="small">빈칸이면 남는 시간 자동 배분</span>
+        </div>
       </div>
       <div class="slots">
         <div class="slot" id="sc${i}" data-i="${i}" data-k="imgCmt"><span class="tag">CMT</span><span>이미지</span><button class="x">×</button></div>
         <div class="slot" id="sb${i}" data-i="${i}" data-k="imgBig"><span class="tag">PMT·AP</span><span>이미지</span><button class="x">×</button></div>
       </div>`;
     $items.appendChild(card);
-    ['tg','b1_','b2_'].forEach(p => {
+    ['tg','b1_','b2_','du'].forEach(p => {
       const el = card.querySelector(`#${p}${i}`);
       el.addEventListener('input', () => {
         items[i].tags = document.getElementById(`tg${i}`).value;
         items[i].b1 = document.getElementById(`b1_${i}`).value;
         items[i].b2 = document.getElementById(`b2_${i}`).value;
-        invalidate(); scheduleSave();
+        items[i].dur = document.getElementById(`du${i}`).value;
+        refreshMeta(); invalidate(); scheduleSave();
       });
       el.addEventListener('focus', () => focusedSlot = i);
     });
@@ -2728,7 +2758,7 @@ function drawItem(ctx, m, it, zoneSrc, animT){
 // 아이템 idx의 애니메이션 경과시간 (등장 시작 = 0)
 function itemAnimT(m, g, t, idx){
   const gi=g.indexOf(idx); if(gi<0) return undefined;
-  const segStart=introDur(m)+gi*itemPer(m,g);
+  const segStart=segBounds(m,g)[gi];
   return t - segStart + (gi===0 ? DISS : DISS/2);
 }
 
@@ -2738,18 +2768,19 @@ function outroDur(m){ return CLIP_DUR[curType][m].o; }
 function clipTotal(m, group){ return totalSec(); }  // 인트로+아웃트로 포함 총 길이 고정
 // 반환: {seg:'intro'|'outro'|'body', local?, itemIdx?, nextIdx?, p?}
 function segmentAt(m, group, t){
-  const per=itemPer(m,group), iD=introDur(m), bodyD=group.length*per;
+  const iD=introDur(m), B=segBounds(m,group), bodyEnd=B[B.length-1];
   if(t < iD) return {seg:'intro', local:t};
-  if(t < iD+bodyD){
-    const bt=t-iD;
-    const k=Math.round(bt/per);
-    if(k>=1 && k<=group.length-1 && Math.abs(bt-k*per)<=DISS/2){
-      const p=(bt-(k*per-DISS/2))/DISS;
-      return {seg:'body', itemIdx:group[k-1], nextIdx:group[k], p};
+  if(t < bodyEnd){
+    for(let k=1;k<group.length;k++){
+      if(Math.abs(t-B[k])<=DISS/2){
+        const p=(t-(B[k]-DISS/2))/DISS;
+        return {seg:'body', itemIdx:group[k-1], nextIdx:group[k], p:Math.max(0,Math.min(1,p))};
+      }
     }
-    return {seg:'body', itemIdx:group[Math.min(group.length-1,Math.floor(bt/per))]};
+    let k=0; while(k<group.length-1 && t>=B[k+1]) k++;
+    return {seg:'body', itemIdx:group[k]};
   }
-  return {seg:'outro', local:t-iD-bodyD};
+  return {seg:'outro', local:t-bodyEnd};
 }
 function drawBody(ctx, m, s, t, g){
   const a1=(t!==undefined)? itemAnimT(m,g,t,s.itemIdx) : undefined;
@@ -2802,12 +2833,11 @@ function drawPreviewAt(t){
   const s=segmentAt(m,g,t);
   if(s.seg==='body'){
     pauseAll();
-    const iD=introDur(m), per=itemPer(m,g);
     const curIdx = (s.p!==undefined && s.p>=0.5) ? s.nextIdx : s.itemIdx;
     const mo = itemMedia(items[curIdx], m);
     if(mo && mo.type==='vid'){
       const v = mo.el;
-      const local = Math.max(0, Math.min(t - iD - g.indexOf(curIdx)*per, v.duration-0.05));
+      const local = Math.max(0, Math.min(t - segBounds(m,g)[g.indexOf(curIdx)], v.duration-0.05));
       if(playing){
         if(v.paused && !v.ended){ v.currentTime = local; v.play().catch(()=>{}); }
         invalidate(); // 영상 아이템 재생 중 연속 갱신
@@ -3005,7 +3035,7 @@ async function renderClip(m, group, onProgress){
   };
   const drawFrV = fr => { drawCoverV(ctx,M,fr); };
 
-  const per=itemPer(m,group), iD=introDur(m), bodyD=group.length*per;
+  const iD=introDur(m), segB=segBounds(m,group), bodyD=segB[segB.length-1]-iD;
   const introF=Math.round(iD*FPS);
   const itemCv = new OffscreenCanvas(W,H), itemCtx = itemCv.getContext('2d');
   const stillCv = new OffscreenCanvas(W,H), stillCtx = stillCv.getContext('2d');
@@ -3030,7 +3060,7 @@ async function renderClip(m, group, onProgress){
 
   const composeFrame = (k, gIdx, zoneSrc) => {
     const t = gf/FPS;
-    const segStart = iD + gIdx*per;
+    const segStart = segB[gIdx];
     const local = t - segStart; // 디졸브 프리롤 구간에선 음수
     drawItem(itemCtx, m, items[k], zoneSrc, local + (gIdx===0 ? DISS : DISS/2));
     if(gIdx>0 && local < DISS/2 && hasStill){
@@ -3047,8 +3077,8 @@ async function renderClip(m, group, onProgress){
   for(let gIdx=0; gIdx<group.length; gIdx++){
     if(encError) throw encError;
     const k = group[gIdx];
-    const segStart = iD + gIdx*per;
-    const ownEnd = (gIdx < group.length-1) ? segStart + per - DISS/2 : segStart + per; // 마지막 소유 시각
+    const segStart = segB[gIdx];
+    const ownEnd = (gIdx < group.length-1) ? segB[gIdx+1] - DISS/2 : segB[gIdx+1]; // 마지막 소유 시각
     const ownEndF = Math.round(ownEnd*FPS);
     const ownFrames = ownEndF - gf;
     const mo = (m==='cmt') ? items[k].imgCmt : items[k].imgBig;
@@ -3151,8 +3181,18 @@ document.getElementById('btnMake').addEventListener('click', async ()=>{
   if(!items.length){ alert('아이템이 없습니다.'); return; }
   for(const m of medias){
     for(const g of clipGroups()){
-      const p=itemPer(m,g);
-      if(p<2){ alert(`${MEDIA[m].name}: 총 ${totalSec()}초에서 인트로/아웃트로를 빼면 아이템당 ${p.toFixed(1)}초입니다. 총 길이를 늘려주세요.`); return; }
+      const durs=itemDurs(m,g);
+      const avail=totalSec()-introDur(m)-outroDur(m);
+      const fsum=g.reduce((a,k)=>{const v=parseFloat(items[k].dur); return a+((v>0)?v:0);},0);
+      const nAuto=g.filter(k=>!(parseFloat(items[k].dur)>0)).length;
+      if(nAuto===0 && Math.abs(fsum-avail)>0.05){
+        alert(`${MEDIA[m].name}: 지정한 아이템 길이 합(${fsum.toFixed(1)}초)이 가용 시간(${avail.toFixed(1)}초 = 총 ${totalSec()}초 - 인트로/아웃트로)과 다릅니다. 길이를 조정하거나 한 아이템을 자동(빈칸)으로 두세요.`); return;
+      }
+      if(nAuto>0 && fsum>avail-nAuto*2){
+        alert(`${MEDIA[m].name}: 지정 길이 합(${fsum.toFixed(1)}초)이 커서 자동 아이템에 2초 미만이 남습니다. 총 길이를 늘리거나 지정 길이를 줄여주세요.`); return;
+      }
+      const mind=Math.min(...durs);
+      if(mind<2){ alert(`${MEDIA[m].name}: 아이템 길이가 ${mind.toFixed(1)}초로 너무 짧습니다 (최소 2초).`); return; }
     }
   }
   const missing=[];
